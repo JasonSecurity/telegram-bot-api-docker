@@ -1,0 +1,170 @@
+name: Build and publish Docker image
+
+on:
+  push:
+    tags:
+      - "*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Telegram Bot API version to build and publish (for example 10.4)"
+        required: true
+        type: string
+        default: "10.4"
+  workflow_call:
+    inputs:
+      version:
+        description: "Telegram Bot API stable version"
+        required: true
+        type: string
+      source_commit:
+        description: "Exact upstream commit that introduced this stable version"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: telegram-bot-api-release
+  cancel-in-progress: false
+
+jobs:
+  docker:
+    if: github.event_name != 'push' || github.event.created == true
+    name: Build and publish Telegram Bot API image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out packaging repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set release version
+        id: release
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -eu
+          if [ -n "$INPUT_VERSION" ]; then
+            version="$INPUT_VERSION"
+          else
+            version="$REF_NAME"
+          fi
+
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
+            echo "::error::Invalid version. Expected a stable version such as 10.4."
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve and validate upstream source commit
+        id: source
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          PROVIDED_SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -euo pipefail
+
+          git clone --filter=blob:none --no-checkout https://github.com/tdlib/telegram-bot-api.git upstream
+
+          git -C upstream fetch --filter=blob:none origin +refs/heads/master:refs/remotes/origin/master
+
+          if [ -n "$PROVIDED_SOURCE_COMMIT" ]; then
+            source_commit="$PROVIDED_SOURCE_COMMIT"
+            git -C upstream cat-file -e "$source_commit^{commit}"
+          else
+            expected_message="Update version to ${RELEASE_VERSION}."
+            source_commit="$(git -C upstream log origin/master --format='%H%x09%s' -- CMakeLists.txt |
+              awk -F '\t' -v expected="$expected_message" '$2 == expected { print $1; exit }')"
+          fi
+
+          if [ -z "$source_commit" ]; then
+            echo "::error::No upstream version-bump commit found for Telegram Bot API ${RELEASE_VERSION}."
+            exit 1
+          fi
+
+          actual_version="$(git -C upstream show "$source_commit:CMakeLists.txt" |
+            sed -nE 's/^project\(TelegramBotApi VERSION ([^ ]+) LANGUAGES CXX\)/\1/p')"
+
+          if [ "$actual_version" != "$RELEASE_VERSION" ]; then
+            echo "::error::Upstream commit $source_commit declares version '$actual_version', expected '$RELEASE_VERSION'."
+            exit 1
+          fi
+
+          echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
+          echo "Using upstream commit: $source_commit"
+
+      - name: Create release tag
+        if: inputs.source_commit != '' || github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -eu
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_VERSION" >/dev/null 2>&1; then
+            echo "::error::Tag $RELEASE_VERSION already exists. Refusing to move an existing release tag."
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$RELEASE_VERSION" -m "Telegram Bot API $RELEASE_VERSION"
+          git push origin "refs/tags/$RELEASE_VERSION"
+
+      - name: Verify Docker Hub credentials
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::error::Repository secret DOCKERHUB_TOKEN is missing or empty."
+            exit 1
+          fi
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: djasonx
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ghcr.io/jasonsecurity/telegram-bot-api
+            docker.io/djasonx/telegram-bot-api
+          tags: |
+            type=ref,event=tag
+            type=raw,value=${{ steps.source.outputs.version }},enable=${{ inputs.version != '' }}
+            type=raw,value=latest
+
+      - name: Build and publish
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            TELEGRAM_BOT_API_VERSION=${{ steps.source.outputs.version }}
+            TELEGRAM_BOT_API_COMMIT=${{ steps.source.outputs.source_commit }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

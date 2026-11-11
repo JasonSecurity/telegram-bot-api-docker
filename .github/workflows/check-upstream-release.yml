@@ -1,0 +1,144 @@
+name: Check Telegram Bot API stable release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/check-upstream-release.yml
+  schedule:
+    # Daily at 12:00 UTC.
+    - cron: "0 12 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Only detect and validate the latest stable release; do not publish"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  detect:
+    permissions:
+      contents: read
+    name: Detect official stable release
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.check.outputs.release }}
+      version: ${{ steps.check.outputs.version }}
+      source_commit: ${{ steps.check.outputs.source_commit }}
+    steps:
+      - name: Check out packaging repository and tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check official changelog and resolve pinned upstream commit
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+          import tempfile
+          from urllib.request import Request, urlopen
+
+          changelog_url = "https://core.telegram.org/bots/api-changelog"
+          request = Request(changelog_url, headers={"User-Agent": "telegram-bot-api-docker-release-check/1.0"})
+          with urlopen(request, timeout=30) as response:
+              html = response.read().decode("utf-8", errors="replace")
+
+          match = re.search(r"Bot API\s+(\d+\.\d+(?:\.\d+)?)", html)
+          if not match:
+              raise SystemExit("Could not identify the latest stable Bot API version in the official changelog.")
+
+          version = match.group(1)
+          version_tuple = tuple(int(part) for part in version.split("."))
+
+          tags = subprocess.check_output(["git", "tag", "--list"], text=True).splitlines()
+          published = []
+          for tag in tags:
+              if re.fullmatch(r"\d+\.\d+(?:\.\d+)?", tag):
+                  published.append((tuple(int(part) for part in tag.split(".")), tag))
+          latest_published = max(published)[0] if published else ()
+
+          # Find the upstream commit whose subject explicitly announces this version.
+          with tempfile.TemporaryDirectory(prefix="telegram-bot-api-upstream-") as temp_dir:
+              upstream = os.path.join(temp_dir, "upstream")
+              subprocess.run(
+                  ["git", "clone", "--filter=blob:none", "--no-checkout",
+                   "https://github.com/tdlib/telegram-bot-api.git", upstream],
+                  check=True, stdout=subprocess.DEVNULL
+              )
+              subprocess.run(
+                  ["git", "-C", upstream, "fetch", "--filter=blob:none", "origin", "+refs/heads/master:refs/remotes/origin/master"],
+                  check=True, stdout=subprocess.DEVNULL
+              )
+              history = subprocess.check_output(
+                  ["git", "-C", upstream, "log", "origin/master",
+                   "--format=%H%x09%s", "--", "CMakeLists.txt"],
+                  text=True
+              )
+              expected_subject = f"Update version to {version}."
+              source_commit = next(
+                  (line.split("\t", 1)[0] for line in history.splitlines()
+                   if len(line.split("\t", 1)) == 2 and line.split("\t", 1)[1] == expected_subject),
+                  None
+              )
+              if not source_commit:
+                  raise SystemExit(
+                      f"Official changelog announces {version}, but no matching upstream "
+                      "CMakeLists.txt version-bump commit exists. Nothing will be published."
+                  )
+
+              cmake = subprocess.check_output(
+                  ["git", "-C", upstream, "show", f"{source_commit}:CMakeLists.txt"],
+                  text=True
+              )
+              cmake_match = re.search(
+                  r"^project\(TelegramBotApi VERSION ([^ ]+) LANGUAGES CXX\)$",
+                  cmake, re.MULTILINE
+              )
+              if not cmake_match or cmake_match.group(1) != version:
+                  raise SystemExit(
+                      f"Upstream commit {source_commit} does not declare the expected version {version}."
+                  )
+
+          output = os.environ["GITHUB_OUTPUT"]
+          with open(output, "a", encoding="utf-8") as handle:
+              handle.write(f"version={version}\n")
+              handle.write(f"source_commit={source_commit}\n")
+
+              if version_tuple > latest_published:
+                  handle.write("release=true\n")
+                  print(f"New stable Bot API release detected: {version}")
+                  print(f"Pinned upstream commit: {source_commit}")
+              else:
+                  handle.write("release=false\n")
+                  print(
+                      f"No new stable release. Official changelog: {version}; "
+                      f"latest version tag in this repository: {'.'.join(map(str, latest_published)) or 'none'}."
+                  )
+          PY
+
+  publish:
+    name: Build and publish newly released version
+    needs: detect
+    if: >-
+      needs.detect.outputs.release == 'true' &&
+      (github.event_name == 'schedule' || inputs.dry_run == false)
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/docker-publish.yml
+    with:
+      version: ${{ needs.detect.outputs.version }}
+      source_commit: ${{ needs.detect.outputs.source_commit }}
+    secrets: inherit

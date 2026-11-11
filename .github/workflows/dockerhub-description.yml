@@ -1,0 +1,30 @@
+name: Sync Docker Hub overview
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - README.md
+      - .github/workflows/dockerhub-description.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  update-overview:
+    name: Update Docker Hub repository information
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Sync README to Docker Hub
+        uses: peter-evans/dockerhub-description@e98e4d1628a5f3be2be7c231e50981aee98723ae # v4.0.0
+        with:
+          username: djasonx
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: djasonx/telegram-bot-api
+          readme-filepath: ./README.md
+          short-description: "Official Telegram Bot API server in multi-arch Docker images (AMD64 and ARM64)."
