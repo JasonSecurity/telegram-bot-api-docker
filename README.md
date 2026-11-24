@@ -2,21 +2,28 @@
 
 Docker images for the official [Telegram Bot API server](https://github.com/tdlib/telegram-bot-api), built from the upstream C++ source.
 
+![Docker Image Version](https://img.shields.io/docker/v/djasonx/telegram-bot-api?sort=semver&label=latest%20version)
+![Docker Image Size](https://img.shields.io/docker/image-size/djasonx/telegram-bot-api/latest)
+
 ## Images
 
-The images are available from both registries:
+The same multi-architecture image is published to both registries:
 
 | Registry | Image |
 |---|---|
 | Docker Hub | `djasonx/telegram-bot-api` |
 | GitHub Container Registry | `ghcr.io/jasonsecurity/telegram-bot-api` |
 
-Available tags:
+The version badge above tracks the newest version tag published to Docker Hub. Available tags can be viewed in the [Docker Hub tags list](https://hub.docker.com/r/djasonx/telegram-bot-api/tags) and the [GHCR package](https://github.com/JasonSecurity/telegram-bot-api-docker/pkgs/container/telegram-bot-api).
 
-- `10.4`: Telegram Bot API 10.4.
-- `latest`: most recently published version.
+Every release is published with two tags:
+
+- `latest`: the newest version published by this repository.
+- `X.Y` (or `X.Y.Z`, when applicable): a version-specific tag.
 
 Both tags support `linux/amd64` and `linux/arm64`. Docker selects the appropriate image for the host architecture.
+
+**Using `latest` does not automatically update a running container.** It only moves the image tag when a new release is published. You remain in control of deployment: pull the image and recreate the container when you choose.
 
 ## Quick start
 
@@ -28,7 +35,7 @@ Create a directory for the server's persistent data:
 mkdir -p ./data
 ```
 
-Start the container:
+Start the container with the newest published version:
 
 ```sh
 docker run -d \
@@ -38,16 +45,18 @@ docker run -d \
   -e TELEGRAM_API_ID="your_api_id" \
   -e TELEGRAM_API_HASH="your_api_hash" \
   -v "$(pwd)/data:/var/lib/telegram-bot-api" \
-  djasonx/telegram-bot-api:10.4
+  djasonx/telegram-bot-api:latest
 ```
 
-To pull the same image from GHCR, use:
+To pull the same image from GHCR:
 
 ```sh
-docker pull ghcr.io/jasonsecurity/telegram-bot-api:10.4
+docker pull ghcr.io/jasonsecurity/telegram-bot-api:latest
 ```
 
 The server listens on port `8081`. The example maps it to port `8081` on the host. Make the endpoint accessible only to the applications and clients that need it; use a firewall or reverse proxy when appropriate.
+
+To deploy a specific release instead of following `latest`, replace `latest` with the desired version tag (for example, `X.Y`). See the registry tag lists linked above for published versions.
 
 ## Docker Compose
 
@@ -56,7 +65,7 @@ Save the following as `compose.yaml`:
 ```yaml
 services:
   telegram-bot-api:
-    image: djasonx/telegram-bot-api:10.4
+    image: djasonx/telegram-bot-api:latest
     container_name: telegram-bot-api
     restart: unless-stopped
     ports:
@@ -81,6 +90,13 @@ Start the service:
 docker compose up -d
 ```
 
+When you decide to deploy a newer release:
+
+```sh
+docker compose pull
+docker compose up -d
+```
+
 ## Configuration
 
 | Variable | Default | Description |
@@ -97,18 +113,9 @@ Local mode supports uploads up to 2000 MB and access to files using local paths.
 
 ## Versions and source
 
-Each versioned image is built from a specific commit in the official upstream repository. The source version and commit are included in the image labels.
+Each version-specific image is built from the corresponding verified commit in the official upstream repository. The source version and commit are included in the image's OCI labels.
 
-The initial image release is based on:
-
-| Item | Value |
-|---|---|
-| Telegram Bot API | `10.4` |
-| Upstream commit | [`7232881b39dfcd048a0d569f1983c5184249ee05`](https://github.com/tdlib/telegram-bot-api/commit/7232881b39dfcd048a0d569f1983c5184249ee05) |
-| Build image | Debian Bookworm Slim |
-| Architectures | `linux/amd64`, `linux/arm64` |
-
-The release workflow checks the [official Bot API changelog](https://core.telegram.org/bots/api-changelog) daily and publishes a new version when the corresponding upstream source revision is available and verified. See [the release procedure](docs/RELEASING.md) for details.
+The release workflow checks the [official Bot API changelog](https://core.telegram.org/bots/api-changelog) daily. When a new stable version is announced and its matching upstream source revision is available and verified, the workflow builds and publishes that version to both registries, including the `latest` tag. See [the release procedure](docs/RELEASING.md) for details.
 
 ## License
 
